@@ -48,7 +48,8 @@ class _SendScreenState extends State<SendScreen> {
 
     final asset =
         _selectedAsset == 'USDT' ? CryptoAsset.usdt : CryptoAsset.usdc;
-    final error = await wallet.sendCrypto(asset, amount, address);
+    final error = await wallet.sendCrypto(asset, amount, address,
+        accessToken: auth.accessToken);
     if (!context.mounted) return;
 
     if (error != null) {

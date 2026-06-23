@@ -66,8 +66,8 @@ class _BuyScreenState extends State<BuyScreen> {
     final wallet = context.read<WalletProvider>();
     final asset =
         _selectedAsset == 'USDT' ? CryptoAsset.usdt : CryptoAsset.usdc;
-    final error =
-        await wallet.buyCryptoWithCard(asset, amount, _sourceCurrency);
+    final error = await wallet.buyCryptoWithCard(asset, amount, _sourceCurrency,
+        accessToken: auth.accessToken);
     if (!mounted) return;
     if (error != null) {
       _err(error);

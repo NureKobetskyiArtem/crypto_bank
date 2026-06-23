@@ -2,8 +2,10 @@
 
 import 'dart:convert';
 import 'dart:math';
+
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import '../models/models.dart';
 import '../services/api_client.dart';
 import '../services/api_enums.dart';
@@ -28,6 +30,11 @@ class WalletProvider extends ChangeNotifier {
   // Cards (EUR + USD)
   VirtualCard? _eurCard;
   VirtualCard? _usdCard;
+
+  // Wallets synced from backend (Wallets API)
+  List<ApiWallet> _apiWallets = [];
+  String? _usdtWalletId;
+  String? _usdcWalletId;
 
   // Transactions
   List<Transaction> _transactions = [];
@@ -69,6 +76,8 @@ class WalletProvider extends ChangeNotifier {
   VirtualCard? get eurCard => _eurCard;
   VirtualCard? get usdCard => _usdCard;
 
+  List<ApiWallet> get apiWallets => List.unmodifiable(_apiWallets);
+
   // Legacy accessor
   VirtualCard? get card => _eurCard;
   bool get hasCard => _eurCard != null || _usdCard != null;
@@ -85,14 +94,13 @@ class WalletProvider extends ChangeNotifier {
   List<Transaction> get eurCardTransactions => transactions
       .where((t) =>
           t.cardCurrency == 'EUR' ||
-          (t.cardCurrency == null &&
-              t.type == TransactionType.cardPayment))
+          (t.cardCurrency == null && t.type == TransactionType.cardPayment))
       .toList();
 
   /// Транзакции только для USD-карты
   List<Transaction> get usdCardTransactions => transactions
-      .where((t) => t.cardCurrency == 'USD' ||
-          t.type == TransactionType.cardPaymentUsd)
+      .where((t) =>
+          t.cardCurrency == 'USD' || t.type == TransactionType.cardPaymentUsd)
       .toList();
 
   bool get isLoading => _isLoading;
@@ -120,7 +128,8 @@ class WalletProvider extends ChangeNotifier {
   // у backend нет, поэтому для новых карт используется имя пользователя,
   // а для уже существующих локальных карт оно сохраняется как есть.
 
-  Future<void> syncCardsFromApi(String accessToken, {String? holderNameFallback}) async {
+  Future<void> syncCardsFromApi(String accessToken,
+      {String? holderNameFallback}) async {
     _setLoading(true);
     try {
       final apiCards = await _api.getCards(accessToken);
@@ -136,11 +145,13 @@ class WalletProvider extends ChangeNotifier {
       }
 
       if (eurApiCard != null) {
-        _eurCard = _mergeApiCard(_eurCard, eurApiCard, 'EUR', holderNameFallback);
+        _eurCard =
+            _mergeApiCard(_eurCard, eurApiCard, 'EUR', holderNameFallback);
         _eurBalance = eurApiCard.balance;
       }
       if (usdApiCard != null) {
-        _usdCard = _mergeApiCard(_usdCard, usdApiCard, 'USD', holderNameFallback);
+        _usdCard =
+            _mergeApiCard(_usdCard, usdApiCard, 'USD', holderNameFallback);
         _usdBalance = usdApiCard.balance;
       }
 
@@ -173,10 +184,120 @@ class WalletProvider extends ChangeNotifier {
     );
   }
 
-  // ── Simulate receive ──────────────────────────────────────────────────────
+  // ── Sync wallets with backend (Wallets API) ───────────────────────────────
+  //
+  // GET /api/wallets — подтягивает реальные кошельки пользователя с backend
+  // и обновляет адреса/балансы USDT и USDC. Если у пользователя ещё нет
+  // кошелька нужной валюты, он создаётся через POST /api/wallets.
+
+  Future<void> syncWalletsFromApi(String accessToken) async {
+    _setLoading(true);
+    try {
+      var apiWallets = await _api.getWallets(accessToken);
+
+      print('=== API WALLETS ===');
+
+      for (final w in apiWallets) {
+        print(
+          'id=${w.id}, currencyCode=${w.currencyCode}, balance=${w.balance}',
+        );
+      }
+
+      final hasUsdt = apiWallets
+          .any((w) => w.currencyCode.toUpperCase() == CurrencyId.usdt.code);
+      final hasUsdc = apiWallets
+          .any((w) => w.currencyCode.toUpperCase() == CurrencyId.usdc.code);
+
+      if (!hasUsdt) {
+        try {
+          await _api.createWallet(accessToken, CurrencyId.usdt.id);
+        } catch (_) {}
+      }
+      if (!hasUsdc) {
+        try {
+          await _api.createWallet(accessToken, CurrencyId.usdc.id);
+        } catch (_) {}
+      }
+      if (!hasUsdt || !hasUsdc) {
+        apiWallets = await _api.getWallets(accessToken);
+      }
+
+      _apiWallets = apiWallets;
+      for (final w in apiWallets) {
+        final code = w.currencyCode.toUpperCase();
+        if (code == CurrencyId.usdt.code) {
+          _usdtWalletId = w.id;
+          _usdtBalance = w.balance;
+          _usdtAddress = w.address;
+        } else if (code == CurrencyId.usdc.code) {
+          _usdcWalletId = w.id;
+          _usdcBalance = w.balance;
+          _usdcAddress = w.address;
+        }
+      }
+      await _save();
+    } catch (e) {
+      _setError('Failed to sync wallets: $e');
+    }
+    _setLoading(false);
+  }
+
+  // ── Sync transactions with backend (Transactions API) ─────────────────────
+  //
+  // GET /api/transactions — заменяет локальную историю транзакций данными
+  // с backend. Используется в авторизованном режиме (есть accessToken).
+
+  Future<void> syncTransactionsFromApi(String accessToken) async {
+    _setLoading(true);
+    try {
+      final apiTxs = await _api.getTransactions(accessToken);
+      _transactions = apiTxs.map(_mapApiTransaction).toList();
+      await _save();
+    } catch (e) {
+      _setError('Failed to sync transactions: $e');
+    }
+    _setLoading(false);
+  }
+
+  Transaction _mapApiTransaction(ApiTransaction t) {
+    final fromCurrency = t.fromCurrencyId != null
+        ? CurrencyId.fromId(t.fromCurrencyId!).code
+        : '';
+    final toCurrency =
+        t.toCurrencyId != null ? CurrencyId.fromId(t.toCurrencyId!).code : null;
+    return Transaction(
+      id: t.id,
+      type: _mapApiTransactionType(t.type),
+      amount: t.fromAmount ?? 0.0,
+      currency: fromCurrency,
+      date: t.createdAt ?? DateTime.now(),
+      description: t.recipientReference?.isNotEmpty == true
+          ? '${t.type} → ${t.recipientReference}'
+          : t.type,
+      secondAmount: t.toAmount,
+      secondCurrency: toCurrency,
+    );
+  }
+
+  TransactionType _mapApiTransactionType(String type) {
+    switch (type.toLowerCase()) {
+      case 'sendmoney':
+      case 'cardpayment':
+        return TransactionType.cardPayment;
+      case 'sendcrypto':
+        return TransactionType.cryptoSent;
+      case 'convert':
+        return TransactionType.cryptoToFiat;
+      default:
+        return TransactionType.cardPayment;
+    }
+  }
 
   Future<void> simulateReceive(CryptoAsset asset, double amount) async {
-    if (amount <= 0) { _setError('Amount must be greater than 0'); return; }
+    if (amount <= 0) {
+      _setError('Amount must be greater than 0');
+      return;
+    }
     _setLoading(true);
     await Future.delayed(const Duration(milliseconds: 800));
     if (asset == CryptoAsset.usdt) {
@@ -185,8 +306,11 @@ class WalletProvider extends ChangeNotifier {
       _usdcBalance += amount;
     }
     _addTx(Transaction(
-      id: _uuid(), type: TransactionType.cryptoReceived,
-      amount: amount, currency: asset.symbol, date: DateTime.now(),
+      id: _uuid(),
+      type: TransactionType.cryptoReceived,
+      amount: amount,
+      currency: asset.symbol,
+      date: DateTime.now(),
       description: 'Received ${asset.symbol} (${asset.network})',
     ));
     await _save();
@@ -195,13 +319,41 @@ class WalletProvider extends ChangeNotifier {
 
   // ── Send crypto ───────────────────────────────────────────────────────────
 
-  Future<String?> sendCrypto(CryptoAsset asset, double amount, String toAddress) async {
+  Future<String?> sendCrypto(
+    CryptoAsset asset,
+    double amount,
+    String toAddress, {
+    String? accessToken,
+  }) async {
     if (amount <= 0) return 'Amount must be greater than 0';
     if (toAddress.trim().isEmpty) return 'Enter a destination address';
     final bal = asset == CryptoAsset.usdt ? _usdtBalance : _usdcBalance;
     if (amount > bal) return 'Insufficient ${asset.symbol} balance';
 
     _setLoading(true);
+
+    final walletId = asset == CryptoAsset.usdt ? _usdtWalletId : _usdcWalletId;
+    if (accessToken != null && accessToken.isNotEmpty && walletId != null) {
+      try {
+        await _api.sendCrypto(
+          accessToken,
+          fromWalletId: walletId,
+          recipientAddress: toAddress.trim(),
+          amount: amount,
+        );
+        await syncWalletsFromApi(accessToken);
+        await syncTransactionsFromApi(accessToken);
+        _setLoading(false);
+        return null;
+      } on ApiException catch (e) {
+        _setLoading(false);
+        return e.message;
+      } catch (e) {
+        _setLoading(false);
+        return 'Failed to send crypto: $e';
+      }
+    }
+
     await Future.delayed(const Duration(milliseconds: 1000));
     if (asset == CryptoAsset.usdt) {
       _usdtBalance -= amount;
@@ -209,9 +361,13 @@ class WalletProvider extends ChangeNotifier {
       _usdcBalance -= amount;
     }
     _addTx(Transaction(
-      id: _uuid(), type: TransactionType.cryptoSent,
-      amount: amount, currency: asset.symbol, date: DateTime.now(),
-      description: 'Sent ${asset.symbol} to ${toAddress.substring(0, min(10, toAddress.length))}…',
+      id: _uuid(),
+      type: TransactionType.cryptoSent,
+      amount: amount,
+      currency: asset.symbol,
+      date: DateTime.now(),
+      description:
+          'Sent ${asset.symbol} to ${toAddress.substring(0, min(10, toAddress.length))}…',
     ));
     await _save();
     _setLoading(false);
@@ -221,12 +377,42 @@ class WalletProvider extends ChangeNotifier {
   // ── Convert crypto → fiat (EUR or USD) ───────────────────────────────────
 
   Future<String?> convertCryptoToFiat(
-      CryptoAsset asset, double amount, String targetCurrency) async {
+      CryptoAsset asset, double amount, String targetCurrency,
+      {String? accessToken}) async {
     if (amount <= 0) return 'Amount must be greater than 0';
     final bal = asset == CryptoAsset.usdt ? _usdtBalance : _usdcBalance;
     if (amount > bal) return 'Insufficient ${asset.symbol} balance';
 
     _setLoading(true);
+
+    final walletId = asset == CryptoAsset.usdt ? _usdtWalletId : _usdcWalletId;
+    final cardId = targetCurrency == 'USD' ? _usdCard?.apiId : _eurCard?.apiId;
+    if (accessToken != null &&
+        accessToken.isNotEmpty &&
+        walletId != null &&
+        cardId != null) {
+      try {
+        await _api.convert(
+          accessToken,
+          walletId: walletId,
+          cardId: cardId,
+          amount: amount,
+          direction: ConversionDirection.walletToCard,
+        );
+        await syncWalletsFromApi(accessToken);
+        await syncCardsFromApi(accessToken);
+        await syncTransactionsFromApi(accessToken);
+        _setLoading(false);
+        return null;
+      } on ApiException catch (e) {
+        _setLoading(false);
+        return e.message;
+      } catch (e) {
+        _setLoading(false);
+        return 'Failed to convert: $e';
+      }
+    }
+
     await Future.delayed(const Duration(milliseconds: 900));
 
     final rate = fiatRate(asset, targetCurrency);
@@ -246,10 +432,14 @@ class WalletProvider extends ChangeNotifier {
     }
 
     _addTx(Transaction(
-      id: _uuid(), type: TransactionType.cryptoToFiat,
-      amount: amount, currency: asset.symbol, date: DateTime.now(),
+      id: _uuid(),
+      type: TransactionType.cryptoToFiat,
+      amount: amount,
+      currency: asset.symbol,
+      date: DateTime.now(),
       description: 'Converted ${asset.symbol} → $targetCurrency',
-      secondAmount: net, secondCurrency: targetCurrency,
+      secondAmount: net,
+      secondCurrency: targetCurrency,
     ));
     await _save();
     _setLoading(false);
@@ -259,39 +449,72 @@ class WalletProvider extends ChangeNotifier {
   // ── Buy crypto with card (EUR or USD balance) ─────────────────────────────
 
   Future<String?> buyCryptoWithCard(
-      CryptoAsset asset, double fiatAmount, String sourceCurrency) async {
-    if (fiatAmount <= 0) return 'Amount must be greater than 0';
+    CryptoAsset asset,
+    double fiatAmount,
+    String sourceCurrency, {
+    String? accessToken,
+  }) async {
+    if (fiatAmount <= 0) {
+      return 'Amount must be greater than 0';
+    }
+
     final bal = sourceCurrency == 'USD' ? _usdBalance : _eurBalance;
-    if (fiatAmount > bal) return 'Insufficient $sourceCurrency balance';
+
+    if (fiatAmount > bal) {
+      return 'Insufficient $sourceCurrency balance';
+    }
+
+    final walletId = asset == CryptoAsset.usdt ? _usdtWalletId : _usdcWalletId;
+
+    final cardId = sourceCurrency == 'USD' ? _usdCard?.apiId : _eurCard?.apiId;
+
+    print('=== BUY CRYPTO ===');
+    print('walletId: $walletId');
+    print('cardId: $cardId');
+    print('amount: $fiatAmount');
+    print('currency: $sourceCurrency');
+    print('token exists: ${accessToken?.isNotEmpty}');
+
+    if (accessToken == null || accessToken.isEmpty) {
+      return 'Authorization required';
+    }
+
+    if (walletId == null) {
+      return 'Wallet ID is missing';
+    }
+
+    if (cardId == null) {
+      return 'Card ID is missing';
+    }
 
     _setLoading(true);
-    await Future.delayed(const Duration(milliseconds: 1000));
 
-    final rate = fiatRate(asset, sourceCurrency);
-    final fee = fiatAmount * buyFeePercent / 100;
-    final net = fiatAmount - fee;
-    final cryptoAmount = net / rate;
+    try {
+      await _api.convert(
+        accessToken,
+        walletId: walletId,
+        cardId: cardId,
+        amount: fiatAmount,
+        direction: ConversionDirection.cardToWallet,
+      );
 
-    if (sourceCurrency == 'USD') {
-      _usdBalance -= fiatAmount;
-    } else {
-      _eurBalance -= fiatAmount;
+      print('CONVERT SUCCESS');
+
+      await syncWalletsFromApi(accessToken);
+      await syncCardsFromApi(accessToken);
+      await syncTransactionsFromApi(accessToken);
+
+      return null;
+    } on ApiException catch (e) {
+      print('API ERROR: ${e.message}');
+      return e.message;
+    } catch (e, st) {
+      print('ERROR: $e');
+      print(st);
+      return 'Failed to convert: $e';
+    } finally {
+      _setLoading(false);
     }
-    if (asset == CryptoAsset.usdt) {
-      _usdtBalance += cryptoAmount;
-    } else {
-      _usdcBalance += cryptoAmount;
-    }
-
-    _addTx(Transaction(
-      id: _uuid(), type: TransactionType.fiatToCrypto,
-      amount: fiatAmount, currency: sourceCurrency, date: DateTime.now(),
-      description: 'Bought ${asset.symbol} with $sourceCurrency',
-      secondAmount: cryptoAmount, secondCurrency: asset.symbol,
-    ));
-    await _save();
-    _setLoading(false);
-    return null;
   }
 
   // ── Crypto swap: USDT ↔ USDC ──────────────────────────────────────────────
@@ -319,11 +542,16 @@ class WalletProvider extends ChangeNotifier {
     }
 
     _addTx(Transaction(
-      id: _uuid(), type: TransactionType.cryptoSwap,
-      amount: amount, currency: from.symbol, date: DateTime.now(),
+      id: _uuid(),
+      type: TransactionType.cryptoSwap,
+      amount: amount,
+      currency: from.symbol,
+      date: DateTime.now(),
       description: 'Swapped ${from.symbol} → ${to.symbol}',
-      secondAmount: received, secondCurrency: to.symbol,
-      swapFromAsset: from.symbol, swapToAsset: to.symbol,
+      secondAmount: received,
+      secondCurrency: to.symbol,
+      swapFromAsset: from.symbol,
+      swapToAsset: to.symbol,
     ));
     await _save();
     _setLoading(false);
@@ -338,6 +566,7 @@ class WalletProvider extends ChangeNotifier {
     required String recipientCard,
     required String recipientName,
     String? note,
+    String? accessToken,
   }) async {
     final isUsd = cardCurrency == 'USD';
     if (isUsd && !hasUsdCard) return 'No USD card issued';
@@ -349,7 +578,28 @@ class WalletProvider extends ChangeNotifier {
     if (recipientName.trim().isEmpty) return 'Enter recipient name';
 
     _setLoading(true);
-    await Future.delayed(const Duration(milliseconds: 1200));
+
+    final fromCardId = isUsd ? _usdCard?.apiId : _eurCard?.apiId;
+    if (accessToken != null && accessToken.isNotEmpty && fromCardId != null) {
+      try {
+        await _api.sendMoney(
+          accessToken,
+          fromCardId: fromCardId,
+          recipientCardNumber: recipientCard.replaceAll(' ', ''),
+          amount: amount,
+        );
+        await syncCardsFromApi(accessToken);
+        await syncTransactionsFromApi(accessToken);
+        _setLoading(false);
+        return null;
+      } on ApiException catch (e) {
+        _setLoading(false);
+        return e.message;
+      } catch (e) {
+        _setLoading(false);
+        return 'Failed to send money: $e';
+      }
+    }
 
     if (isUsd) {
       _usdBalance -= amount;
@@ -360,8 +610,11 @@ class WalletProvider extends ChangeNotifier {
     final masked = _maskRecipient(recipientCard.trim());
     _addTx(Transaction(
       id: _uuid(),
-      type: isUsd ? TransactionType.cardPaymentUsd : TransactionType.cardPayment,
-      amount: amount, currency: cardCurrency, date: DateTime.now(),
+      type:
+          isUsd ? TransactionType.cardPaymentUsd : TransactionType.cardPayment,
+      amount: amount,
+      currency: cardCurrency,
+      date: DateTime.now(),
       description: note?.isNotEmpty == true
           ? '${note!.trim()} → $masked'
           : 'Transfer to $masked',
@@ -394,7 +647,12 @@ class WalletProvider extends ChangeNotifier {
 
     if (accessToken != null && accessToken.isNotEmpty) {
       try {
-        final apiCard = await _api.createCard(accessToken, currencyId);
+        await _api.createCard(accessToken, currencyId);
+        await _api.createCard(accessToken, currencyId);
+        final cards = await _api.getCards(accessToken);
+        final apiCard = cards.firstWhere(
+          (c) => c.currencyId == currencyId,
+        );
         final card = VirtualCard(
           number: apiCard.cardNumber,
           holderName: holderName.trim().toUpperCase(),
@@ -439,8 +697,13 @@ class WalletProvider extends ChangeNotifier {
     await prefs.setDouble('usdBalance', _usdBalance);
     await prefs.setString('usdtAddress', _usdtAddress);
     await prefs.setString('usdcAddress', _usdcAddress);
-    await prefs.setStringList(
-        'transactions',
+    if (_usdtWalletId != null) {
+      await prefs.setString('usdtWalletId', _usdtWalletId!);
+    }
+    if (_usdcWalletId != null) {
+      await prefs.setString('usdcWalletId', _usdcWalletId!);
+    }
+    await prefs.setStringList('transactions',
         _transactions.map((t) => jsonEncode(t.toJson())).toList());
     if (_eurCard != null) {
       await prefs.setString('eurCard', jsonEncode(_eurCard!.toJson()));
@@ -456,11 +719,13 @@ class WalletProvider extends ChangeNotifier {
     _usdtBalance = prefs.getDouble('usdtBalance') ?? 0.0;
     _usdcBalance = prefs.getDouble('usdcBalance') ?? 0.0;
     // Migrate old single fiatBalance → eurBalance
-    _eurBalance = prefs.getDouble('eurBalance') ??
-        prefs.getDouble('fiatBalance') ?? 0.0;
+    _eurBalance =
+        prefs.getDouble('eurBalance') ?? prefs.getDouble('fiatBalance') ?? 0.0;
     _usdBalance = prefs.getDouble('usdBalance') ?? 0.0;
     _usdtAddress = prefs.getString('usdtAddress') ?? '';
     _usdcAddress = prefs.getString('usdcAddress') ?? '';
+    _usdtWalletId = prefs.getString('usdtWalletId');
+    _usdcWalletId = prefs.getString('usdcWalletId');
     _transactions = (prefs.getStringList('transactions') ?? [])
         .map((s) => Transaction.fromJson(jsonDecode(s)))
         .toList();
@@ -490,7 +755,10 @@ class WalletProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void clearError() { _error = null; notifyListeners(); }
+  void clearError() {
+    _error = null;
+    notifyListeners();
+  }
 
   String _generateAddress(String prefix) {
     const chars = '0123456789abcdef';
@@ -523,10 +791,16 @@ class WalletProvider extends ChangeNotifier {
   Future<void> reset() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.clear();
-    _usdtBalance = 0; _usdcBalance = 0;
-    _eurBalance = 0; _usdBalance = 0;
-    _eurCard = null; _usdCard = null;
+    _usdtBalance = 0;
+    _usdcBalance = 0;
+    _eurBalance = 0;
+    _usdBalance = 0;
+    _eurCard = null;
+    _usdCard = null;
     _transactions = [];
+    _apiWallets = [];
+    _usdtWalletId = null;
+    _usdcWalletId = null;
     _usdtAddress = _generateAddress('T');
     _usdcAddress = _generateAddress('0x');
     await _save();

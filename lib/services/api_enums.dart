@@ -43,3 +43,14 @@ enum CurrencyId {
         orElse: () => CurrencyId.eur,
       );
 }
+
+/// Направление конвертации для POST /api/transactions/convert.
+/// walletToCard — списываем с криптокошелька, зачисляем на фиатную карту;
+/// cardToFiat (наоборот) — списываем с карты, зачисляем на кошелёк.
+enum ConversionDirection {
+  walletToCard(0),
+  cardToWallet(1);
+
+  final int value;
+  const ConversionDirection(this.value);
+}

@@ -80,10 +80,14 @@ class _RootShellState extends State<RootShell> {
       final token = auth.accessToken;
       if (token != null && token.isNotEmpty) {
         final wallet = context.read<WalletProvider>();
-        Future.microtask(() => wallet.syncCardsFromApi(
-              token,
-              holderNameFallback: auth.user?.displayName,
-            ));
+        Future.microtask(() async {
+          await wallet.syncCardsFromApi(
+            token,
+            holderNameFallback: auth.user?.displayName,
+          );
+          await wallet.syncWalletsFromApi(token);
+          await wallet.syncTransactionsFromApi(token);
+        });
       }
     } else if (!auth.isAuthenticated) {
       _wasAuthenticated = false;

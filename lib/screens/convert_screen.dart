@@ -127,7 +127,8 @@ class _CryptoToFiatTabState extends State<_CryptoToFiatTab>
     }
     final wallet = context.read<WalletProvider>();
     final asset = _fromAsset == 'USDT' ? CryptoAsset.usdt : CryptoAsset.usdc;
-    final error = await wallet.convertCryptoToFiat(asset, amount, _toCurrency);
+    final error = await wallet.convertCryptoToFiat(asset, amount, _toCurrency,
+        accessToken: auth.accessToken);
     if (!mounted) return;
     if (error != null) {
       _err(error);

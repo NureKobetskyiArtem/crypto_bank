@@ -726,6 +726,7 @@ class _SendTransferScreenState extends State<SendTransferScreen> {
       recipientCard: _recipientCtrl.text,
       recipientName: _nameCtrl.text,
       note: _noteCtrl.text,
+      accessToken: auth.accessToken,
     );
     if (!context.mounted) return;
 

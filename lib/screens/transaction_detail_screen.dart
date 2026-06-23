@@ -2,9 +2,10 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+
 import '../models/models.dart';
-import '../utils/theme.dart';
 import '../utils/formatters.dart';
+import '../utils/theme.dart';
 
 class TransactionDetailScreen extends StatelessWidget {
   final Transaction tx;
@@ -61,23 +62,6 @@ class TransactionDetailScreen extends StatelessWidget {
               ),
             ),
 
-            // ── Secondary amount (convert / buy / swap) ──────────────────────
-            if (tx.secondAmount != null && tx.secondCurrency != null) ...[
-              const SizedBox(height: 4),
-              Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                const Icon(Icons.arrow_downward_rounded,
-                    color: AppColors.textSecondary, size: 14),
-                const SizedBox(width: 4),
-                Text(
-                  config.secondaryAmount!,
-                  style: const TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w500),
-                ),
-              ]),
-            ],
-
             const SizedBox(height: 6),
             Text(formatDate(tx.date),
                 style: const TextStyle(
@@ -86,8 +70,7 @@ class TransactionDetailScreen extends StatelessWidget {
             // ── Status pill ─────────────────────────────────────────────────
             const SizedBox(height: 14),
             Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
               decoration: BoxDecoration(
                 color: AppColors.success.withAlpha(25),
                 borderRadius: BorderRadius.circular(20),
@@ -116,14 +99,20 @@ class TransactionDetailScreen extends StatelessWidget {
               ),
               child: Column(
                 children: [
-                  _Row(label: 'Transaction ID', value: tx.id, mono: true, copyable: true),
+                  _Row(
+                      label: 'Transaction ID',
+                      value: tx.id,
+                      mono: true,
+                      copyable: true),
                   _divider(),
                   _Row(label: 'Date', value: _fullDate(tx.date)),
                   _divider(),
                   _Row(label: 'Type', value: config.typeLabel),
                   _divider(),
-                  _Row(label: 'Amount',
-                      value: '${tx.amount} ${tx.currency}', mono: true),
+                  _Row(
+                      label: 'Amount',
+                      value: '${tx.amount} ${tx.currency}',
+                      mono: true),
                   if (tx.secondAmount != null) ...[
                     _divider(),
                     _Row(
@@ -150,12 +139,15 @@ class TransactionDetailScreen extends StatelessWidget {
                   ],
                   if (tx.swapFromAsset != null) ...[
                     _divider(),
-                    _Row(label: 'Swap',
+                    _Row(
+                        label: 'Swap',
                         value: '${tx.swapFromAsset} → ${tx.swapToAsset}'),
                   ],
                   if (tx.cardCurrency != null) ...[
                     _divider(),
-                    _Row(label: 'Card', value: '${tx.cardCurrency} Virtual Card'),
+                    _Row(
+                        label: 'Card',
+                        value: '${tx.cardCurrency} Virtual Card'),
                   ],
                 ],
               ),
@@ -192,13 +184,22 @@ class TransactionDetailScreen extends StatelessWidget {
     );
   }
 
-  Widget _divider() =>
-      const Divider(height: 1, indent: 16, endIndent: 16);
+  Widget _divider() => const Divider(height: 1, indent: 16, endIndent: 16);
 
   String _fullDate(DateTime dt) {
     const months = [
-      'January', 'February', 'March', 'April', 'May', 'June',
-      'July', 'August', 'September', 'October', 'November', 'December'
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December'
     ];
     final h = dt.hour.toString().padLeft(2, '0');
     final m = dt.minute.toString().padLeft(2, '0');
@@ -208,10 +209,14 @@ class TransactionDetailScreen extends StatelessWidget {
 
   String _secondLabel(TransactionType type) {
     switch (type) {
-      case TransactionType.cryptoToFiat: return 'Received (fiat)';
-      case TransactionType.fiatToCrypto: return 'Received (crypto)';
-      case TransactionType.cryptoSwap:   return 'Received';
-      default:                           return 'Second amount';
+      case TransactionType.cryptoToFiat:
+        return 'Received (fiat)';
+      case TransactionType.fiatToCrypto:
+        return 'Received (crypto)';
+      case TransactionType.cryptoSwap:
+        return 'Received';
+      default:
+        return 'Second amount';
     }
   }
 
@@ -246,7 +251,8 @@ class TransactionDetailScreen extends StatelessWidget {
           typeLabel: 'Converted to Fiat',
           primaryAmount: '-${formatCrypto(tx.amount)} ${tx.currency}',
           amountColor: AppColors.accent,
-          secondaryAmount: '+${formatFiat(tx.secondAmount!, tx.secondCurrency!)}',
+          secondaryAmount:
+              '+${formatFiat(tx.secondAmount!, tx.secondCurrency!)}',
         );
       case TransactionType.fiatToCrypto:
         return _TxConfig(
@@ -255,7 +261,8 @@ class TransactionDetailScreen extends StatelessWidget {
           typeLabel: 'Bought Crypto',
           primaryAmount: '-${formatFiat(tx.amount, tx.currency)}',
           amountColor: AppColors.error,
-          secondaryAmount: '+${formatCrypto(tx.secondAmount!)} ${tx.secondCurrency}',
+          secondaryAmount:
+              '+${formatCrypto(tx.secondAmount!)} ${tx.secondCurrency}',
         );
       case TransactionType.cardPayment:
       case TransactionType.cardPaymentUsd:
@@ -273,7 +280,8 @@ class TransactionDetailScreen extends StatelessWidget {
           typeLabel: 'Crypto Swap',
           primaryAmount: '-${formatCrypto(tx.amount)} ${tx.currency}',
           amountColor: AppColors.usdtColor,
-          secondaryAmount: '+${formatCrypto(tx.secondAmount!)} ${tx.secondCurrency}',
+          secondaryAmount:
+              '+${formatCrypto(tx.secondAmount!)} ${tx.secondCurrency}',
         );
       case TransactionType.cardTopup:
         return _TxConfig(

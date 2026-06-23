@@ -153,6 +153,48 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
+  // ── Users API ─────────────────────────────────────────────────────────────
+  //
+  // GET /api/users/me — обновляет email/имя/дату рождения/страну из backend
+  // (полезно, если данные пользователя изменились на сервере).
+
+  Future<ApiMe?> fetchMyDetails() async {
+    final token = accessToken;
+    if (token == null || token.isEmpty) return null;
+    try {
+      final me = await _api.getMyDetails(token);
+      if (_user != null) {
+        _user = UserProfile(
+          id: me.id,
+          email: me.email,
+          firstName: me.firstName,
+          lastName: me.lastName,
+          countryId: _user!.countryId,
+          createdAt: me.createdAt ?? _user!.createdAt,
+          accessToken: _user!.accessToken,
+        );
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('auth_user', jsonEncode(_user!.toJson()));
+        notifyListeners();
+      }
+      return me;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// GET /api/users — список всех пользователей (например, для выбора
+  /// получателя перевода).
+  Future<List<ApiUserSummary>> fetchAllUsers() async {
+    final token = accessToken;
+    if (token == null || token.isEmpty) return [];
+    try {
+      return await _api.getAllUsers(token);
+    } catch (_) {
+      return [];
+    }
+  }
+
   // ── Logout ────────────────────────────────────────────────────────────────
 
   Future<void> logout() async {

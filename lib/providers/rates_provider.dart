@@ -9,6 +9,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../models/models.dart';
+import '../services/api_client.dart';
 
 class RatesProvider extends ChangeNotifier {
   ExchangeRates _rates = ExchangeRates.fallback();
@@ -53,6 +54,64 @@ class RatesProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
+      // ── Step 0: Try backend Currencies API first (api/currencies/rates) ────
+      try {
+        final backendRates = await ApiClient.instance.getCurrencyRates();
+        if (backendRates.isNotEmpty) {
+          double? usdtToUsd, usdcToUsd, btcToUsd, ethToUsd;
+          double? usdToEurBackend, usdToGbpBackend, usdToUahBackend;
+          for (final r in backendRates) {
+            switch (r.currencyCode.toUpperCase()) {
+              case 'USDT':
+                usdtToUsd = r.rateToUsd;
+                break;
+              case 'USDC':
+                usdcToUsd = r.rateToUsd;
+                break;
+              case 'BTC':
+                btcToUsd = r.rateToUsd;
+                break;
+              case 'ETH':
+                ethToUsd = r.rateToUsd;
+                break;
+              case 'EUR':
+                // rateToUsd для EUR обычно означает 1 EUR = X USD,
+                // поэтому usdToEur = 1 / rateToUsd.
+                if (r.rateToUsd > 0) usdToEurBackend = 1 / r.rateToUsd;
+                break;
+              case 'GBP':
+                if (r.rateToUsd > 0) usdToGbpBackend = 1 / r.rateToUsd;
+                break;
+              case 'UAH':
+                if (r.rateToUsd > 0) usdToUahBackend = 1 / r.rateToUsd;
+                break;
+            }
+          }
+          // Используем backend-данные, только если нашли хотя бы курсы
+          // стейблкоинов — иначе считаем ответ неполным и идём дальше.
+          if (usdtToUsd != null && usdcToUsd != null) {
+            _rates = ExchangeRates(
+              usdtToUsd: usdtToUsd,
+              usdcToUsd: usdcToUsd,
+              usdToEur: usdToEurBackend ?? _rates.usdToEur,
+              usdToGbp: usdToGbpBackend ?? _rates.usdToGbp,
+              usdToUah: usdToUahBackend ?? _rates.usdToUah,
+              btcToUsd: btcToUsd ?? _rates.btcToUsd,
+              ethToUsd: ethToUsd ?? _rates.ethToUsd,
+              updatedAt: DateTime.now(),
+            );
+            _lastFetch = DateTime.now();
+            _hasError = false;
+            _isLoading = false;
+            notifyListeners();
+            return;
+          }
+        }
+      } catch (_) {
+        // Backend недоступен или не вернул нужных данных — используем
+        // публичные API (CoinGecko / exchangerate) как и раньше.
+      }
+
       // ── Step 1: Crypto prices in USD (CoinGecko free API) ──────────────────
       final cryptoUri = Uri.parse(
         'https://api.coingecko.com/api/v3/simple/price'
